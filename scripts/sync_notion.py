@@ -68,26 +68,80 @@ def query_problem_in_notion(problem_name):
         print(f"Error querying Notion for {problem_name}: {e}")
         return None
 
-def calculate_sm2(repetitions, ef, interval, quality=4):
+def get_problem_commit_dates(problem_name):
     """
-    Calculate the next review interval using the SM-2 algorithm.
+    Get all unique dates when a problem was committed.
+    Returns list of date strings in YYYY-MM-DD format.
     """
-    if quality < 3:
-        repetitions = 0
-        interval = 1
-    else:
-        repetitions += 1
-        if repetitions == 1:
+    commit_dates = []
+
+    try:
+        # Method 1: Search git log for commits with submission pattern in message
+        cmd = ["git", "log", "--format=%ai", "--grep", f"{problem_name} - submission-"]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+        for line in result.stdout.strip().split('\n'):
+            if line:
+                # Parse date (format: 2026-03-31 10:46:32 +0800)
+                date_part = line.split()[0]  # Get just the YYYY-MM-DD part
+                commit_dates.append(date_part)
+
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: Error searching commit messages for {problem_name}: {e}")
+
+    try:
+        # Method 2: Fallback - check file history for submission files in the problem directory
+        # This catches bulk syncs and other commits that don't follow the message pattern
+        problem_dir = f"Data Structures & Algorithms/{problem_name}"
+        cmd = ["git", "log", "--format=%ai", "--", f"{problem_dir}/submission-*.py"]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+        for line in result.stdout.strip().split('\n'):
+            if line:
+                # Parse date (format: 2026-03-31 10:46:32 +0800)
+                date_part = line.split()[0]  # Get just the YYYY-MM-DD part
+                commit_dates.append(date_part)
+
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: Error searching file history for {problem_name}: {e}")
+
+    # Return unique dates, sorted chronologically
+    unique_dates = sorted(list(set(commit_dates)))
+    return unique_dates
+
+def count_unique_practice_days(problem_name):
+    """
+    Count the number of unique days a problem was worked on.
+    Returns integer count.
+    """
+    commit_dates = get_problem_commit_dates(problem_name)
+    return len(commit_dates)
+
+def calculate_sm2_progressive(practice_days, quality=4):
+    """
+    Calculate SM-2 values by simulating all practice days from scratch.
+    Each unique commit date counts as one practice day, regardless of how many
+    submission files were committed on that date.
+    Returns (repetitions, easiness_factor, interval).
+    """
+    if practice_days == 0:
+        return 0, 2.5, 0
+
+    ef = 2.5
+    interval = 0
+
+    for rep in range(1, practice_days + 1):
+        if rep == 1:
             interval = 1
-        elif repetitions == 2:
+        elif rep == 2:
             interval = 6
         else:
             interval = round(interval * ef)
 
-    ef = ef + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
-    ef = max(1.3, ef)
+        ef = ef + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
+        ef = max(1.3, ef)
 
-    return repetitions, ef, interval
+    return practice_days, ef, interval
 
 def sync_problem_to_notion(problem_name):
     print(f"Syncing {problem_name} to Notion...")
@@ -95,20 +149,17 @@ def sync_problem_to_notion(problem_name):
 
     today_str = datetime.now(timezone.utc).date().isoformat()
 
+    # Count unique commit dates as practice days — submission-X numbers are irrelevant
+    actual_repetitions = count_unique_practice_days(problem_name)
+    if actual_repetitions == 0:
+        # Fallback: the current commit is at minimum the first practice day
+        actual_repetitions = 1
+
+    # Recalculate SM-2 from scratch based on total unique practice days
+    new_reps, new_ef, new_interval = calculate_sm2_progressive(actual_repetitions)
+    next_review_date = (datetime.now(timezone.utc) + timedelta(days=new_interval)).date().isoformat()
+
     if page:
-        # Update existing
-        props = page["properties"]
-
-        # safely extract current values
-        repetitions = props.get("Repetitions", {}).get("number") or 0
-        ef = props.get("Easiness Factor", {}).get("number") or 2.5
-        interval = props.get("Interval", {}).get("number") or 0
-
-        # SM-2 calculation
-        new_reps, new_ef, new_interval = calculate_sm2(repetitions, ef, interval, quality=4)
-
-        next_review_date = (datetime.now(timezone.utc) + timedelta(days=new_interval)).date().isoformat()
-
         try:
             notion.pages.update(
                 page_id=page["id"],
@@ -120,17 +171,11 @@ def sync_problem_to_notion(problem_name):
                     "Interval": {"number": new_interval}
                 }
             )
-            print(f"Updated {problem_name}: Next review in {new_interval} days.")
+            print(f"Updated {problem_name}: {actual_repetitions} practice day(s), next review in {new_interval} days.")
         except Exception as e:
             print(f"Failed to update {problem_name} in Notion: {e}")
 
     else:
-        # Create new
-        new_reps = 1
-        new_ef = 2.5
-        new_interval = 1
-        next_review_date = (datetime.now(timezone.utc) + timedelta(days=new_interval)).date().isoformat()
-
         try:
             notion.pages.create(
                 parent={"database_id": NOTION_DATABASE_ID},
@@ -143,7 +188,7 @@ def sync_problem_to_notion(problem_name):
                     "Interval": {"number": new_interval}
                 }
             )
-            print(f"Created {problem_name}: Next review in {new_interval} days.")
+            print(f"Created {problem_name}: {actual_repetitions} practice day(s), next review in {new_interval} days.")
         except Exception as e:
             print(f"Failed to create {problem_name} in Notion: {e}")
 
