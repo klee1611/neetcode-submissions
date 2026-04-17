@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run:*)",
+      "Bash(uv pip:*)",
+      "Bash(curl -s https://pypi.org/pypi/notion-client/json)"
+    ],
+	"bash": [
+		{
+			"allow": "git add *",
+			"description": "Allow staging files for commit"
+		},
+		{
+			"allow": "git commit *",
+			"description": "Allow creating commits"
+		},
+		{
+			"allow": "git push *",
+			"description": "Allow pushing to remote repository"
+		}
+	]
+  }
+}
